@@ -144,8 +144,8 @@ def generate_outputs(scored_df, conn, output_dir):
     latest_year = scored_df['year'].max()
 
     # Merge scored with production
-    compare_cols = ['company_id', 'year', 'calculated_qot', 'segment',
-                    'company_name', 'last_rule_applied', 'mosaic_score']
+    compare_cols = ['company_id', 'year', 'calculated_qot', 'calculated_sub_quality',
+                    'segment', 'company_name', 'last_rule_applied', 'mosaic_score']
     available = [c for c in compare_cols if c in scored_df.columns]
     merged = scored_df[available].merge(prod, on=['company_id', 'year'], how='inner')
     merged['delta'] = merged['calculated_qot'] - merged['production_qot']
@@ -184,47 +184,39 @@ def generate_outputs(scored_df, conn, output_dir):
 
     q5_company_ids = set(q5_changes['company_id'].unique())
 
-    # --- Tab 2: Confirm Hot + Iconic Designations ---
-    # Q5 = Hot. If a company earns Q5, it's Hot.
-    # If previously Hot but no longer Q5, it may be Iconic/Incumbent/Legacy.
-    hot_iconic_incumb = latest[
-        latest['sub_quality'].isin(['Hot', 'Iconic', 'Incumbent', 'Legacy'])
+    # --- Tab 2: Sub-Quality Designations ---
+    # Model now auto-assigns calculated_sub_quality. Compare against current DB values.
+    has_designation = latest[
+        latest['sub_quality'].isin(['Hot', 'Iconic', 'Incumbent', 'Legacy']) |
+        latest['calculated_sub_quality'].notna()
     ].copy()
-    hot_iconic_incumb['earns_q5'] = hot_iconic_incumb['calculated_qot'] == 5
 
-    # Suggest what sub_quality should be based on model output
-    def suggest_sub_quality(row):
-        if row['calculated_qot'] == 5:
-            return 'Hot'
-        elif row['calculated_qot'] == 4:
-            # Was previously Hot/Iconic → could be Iconic or Incumbent
-            if row['sub_quality'] in ('Hot', 'Iconic'):
-                return 'Iconic or Incumbent'
-            return row['sub_quality']
-        elif row['calculated_qot'] <= 3:
-            if row['sub_quality'] in ('Hot', 'Iconic'):
-                return 'Legacy'
-            return row['sub_quality']
-        return row['sub_quality']
-
-    hot_iconic_incumb['suggested_sub_quality'] = hot_iconic_incumb.apply(suggest_sub_quality, axis=1)
-    hot_iconic_incumb['designation_change'] = (
-        hot_iconic_incumb['sub_quality'] != hot_iconic_incumb['suggested_sub_quality']
+    has_designation['designation_change'] = (
+        has_designation['sub_quality'].fillna('') != has_designation['calculated_sub_quality'].fillna('')
     )
 
-    tab2 = hot_iconic_incumb[[
+    tab2 = has_designation[[
         'company_id', 'company_name', 'segment', 'mosaic_score',
-        'sub_quality', 'suggested_sub_quality', 'designation_change',
-        'production_qot', 'calculated_qot', 'earns_q5',
+        'sub_quality', 'calculated_sub_quality', 'designation_change',
+        'production_qot', 'calculated_qot',
         'last_rule_applied'
     ]].copy()
-    tab2 = tab2.sort_values(['sub_quality', 'designation_change', 'calculated_qot'],
-                            ascending=[True, False, False])
-    tab2_path = os.path.join(output_dir, 'Tab 2 - Confirm Hot + Iconic Designations.csv')
+    tab2 = tab2.rename(columns={
+        'sub_quality': 'current_sub_quality',
+        'calculated_sub_quality': 'model_sub_quality',
+    })
+    tab2 = tab2.sort_values(['designation_change', 'model_sub_quality', 'calculated_qot'],
+                            ascending=[False, True, False])
+    tab2_path = os.path.join(output_dir, 'Tab 2 - Sub-Quality Designations.csv')
     tab2.to_csv(tab2_path, index=False)
-    print(f"  Tab 2: {len(tab2)} designated companies -> {tab2_path}")
-    print(f"    Earns Q5 (Hot): {tab2['earns_q5'].sum()}")
-    print(f"    Designation changes suggested: {tab2['designation_change'].sum()}")
+
+    # Summary stats
+    changes = tab2['designation_change'].sum()
+    model_counts = tab2['model_sub_quality'].value_counts()
+    print(f"  Tab 2: {len(tab2)} companies with designations -> {tab2_path}")
+    print(f"    Designation changes: {changes}")
+    for sq in ['Hot', 'Iconic', 'Incumbent', 'Legacy']:
+        print(f"    Model {sq}: {model_counts.get(sq, 0)}")
 
     # --- Tab 3: All Other Quality Changes ---
     other_changes = latest[

@@ -342,6 +342,110 @@ def apply_current_year_override(df, params):
     return df
 
 
+# ── Spec Rules: Auto-Assign Sub-Quality Designations ─────────────────────
+
+def apply_sub_quality_assignment(df, params):
+    """Auto-assign sub_quality designations per company-year.
+    Only applies to companies that achieved Q4+ (Top) in at least one year.
+
+    Hot: Q5 in this year
+    Iconic: Q4, was Hot within last N years, top-quartile growth for segment
+    Incumbent: Q3-Q4, was ever Hot, but not Iconic-eligible
+    Legacy: Q1-Q2, was ever Top/Hot
+    """
+    if not params.get("enable_sub_quality_assignment", False):
+        return df
+
+    recency_window = params.get('sub_quality_recency_years', 5)
+    growth_pct = params.get('sub_quality_growth_percentile', 0.75)
+    incumb_to_legacy_yrs = params.get('incumbent_to_legacy_years', 5)
+
+    df['calculated_sub_quality'] = pd.Series([None] * len(df), index=df.index, dtype=object)
+
+    # Step 1: Identify eligible companies (ever Q4+)
+    max_qot = df.groupby('company_id')['calculated_qot'].transform('max')
+    eligible = max_qot >= 4
+
+    if not eligible.any():
+        return df
+
+    # Step 2: Compute segment-year growth percentile thresholds
+    rev_g = df['rev_growth_3y'].fillna(0)
+    val_g = df['val_growth_3y'].fillna(0)
+
+    rev_p75 = df.groupby(['segment', 'year'])['rev_growth_3y'].transform(
+        lambda x: x.quantile(growth_pct)
+    ).fillna(0)
+    val_p75 = df.groupby(['segment', 'year'])['val_growth_3y'].transform(
+        lambda x: x.quantile(growth_pct)
+    ).fillna(0)
+
+    top_growth = (rev_g >= rev_p75) | (val_g >= val_p75)
+
+    # Step 3: Build hot-years lookup per company
+    # For each company-year, check if Hot (Q5) within prior N years
+    is_q5 = df['calculated_qot'] == 5
+
+    # Create a helper: for each company, the set of years they were Q5
+    q5_by_company = df.loc[is_q5].groupby('company_id')['year'].apply(set).to_dict()
+
+    # Vectorized recency check
+    def check_recent_hot(row):
+        co_q5_years = q5_by_company.get(row['company_id'], set())
+        return any(row['year'] - recency_window <= hy < row['year'] for hy in co_q5_years)
+
+    recent_hot = pd.Series(False, index=df.index)
+    eligible_idx = df.index[eligible]
+    if len(eligible_idx) > 0:
+        recent_hot.loc[eligible_idx] = df.loc[eligible_idx].apply(check_recent_hot, axis=1)
+
+    # Step 4: Assign sub_quality using vectorized masks
+    qot = df['calculated_qot']
+
+    # Hot: Q5
+    hot_mask = eligible & (qot == 5)
+    df.loc[hot_mask, 'calculated_sub_quality'] = 'Hot'
+
+    # Iconic: Q4 + recent Hot + top growth
+    iconic_mask = eligible & (qot == 4) & recent_hot & top_growth
+    df.loc[iconic_mask, 'calculated_sub_quality'] = 'Iconic'
+
+    # Incumbent: Q3-Q4, eligible, not already Hot or Iconic
+    assigned = hot_mask | iconic_mask
+    incumbent_mask = eligible & (qot >= 3) & ~assigned
+    df.loc[incumbent_mask, 'calculated_sub_quality'] = 'Incumbent'
+
+    # Legacy: Q1-Q2, eligible, not already assigned
+    assigned = assigned | incumbent_mask
+    legacy_mask = eligible & (qot <= 2) & ~assigned
+    df.loc[legacy_mask, 'calculated_sub_quality'] = 'Legacy'
+
+    # Step 5: Long-stagnant incumbents → Legacy
+    # Only for Q3 or below — Q4 Incumbents stay Incumbent (still Top quality)
+    if incumb_to_legacy_yrs > 0:
+        is_q3_incumbent = (df['calculated_sub_quality'] == 'Incumbent') & (df['calculated_qot'] <= 3)
+        if is_q3_incumbent.any():
+            sorted_df = df.sort_values(['company_id', 'year'])
+            incumbent_streak = pd.Series(0, index=df.index)
+
+            for cid in df.loc[is_q3_incumbent, 'company_id'].unique():
+                co_mask = sorted_df['company_id'] == cid
+                co_idx = sorted_df.index[co_mask]
+                streak = 0
+                for idx in co_idx:
+                    if (sorted_df.at[idx, 'calculated_sub_quality'] == 'Incumbent' and
+                            sorted_df.at[idx, 'calculated_qot'] <= 3):
+                        streak += 1
+                    else:
+                        streak = 0
+                    incumbent_streak.at[idx] = streak
+
+            stagnant_mask = (incumbent_streak >= incumb_to_legacy_yrs)
+            df.loc[stagnant_mask, 'calculated_sub_quality'] = 'Legacy'
+
+    return df
+
+
 # ── Phase 2: Standard Upgrades ────────────────────────────────────────────
 
 # Revenue bucket definitions: (key_suffix, lower_bound, upper_bound)

@@ -236,6 +236,12 @@ SPEC_ALIGNED_CONFIG = {
     # Current year manual override
     "enable_current_year_override": True,
 
+    # Sub-quality auto-assignment
+    "enable_sub_quality_assignment": True,
+    "sub_quality_recency_years": 5,
+    "sub_quality_growth_percentile": 0.75,
+    "incumbent_to_legacy_years": 5,
+
     # Use the spec pipeline
     "use_spec_pipeline": True,
 }

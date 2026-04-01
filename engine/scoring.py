@@ -9,6 +9,7 @@ from engine.rules import (
     apply_no_mosaic_fallback,
     apply_q5_promotions,
     apply_current_year_override,
+    apply_sub_quality_assignment,
     apply_revenue_upgrades,
     apply_public_revenue_upgrades,
     apply_valuation_upgrades,
@@ -101,8 +102,11 @@ SPEC_RULE_PIPELINE = [
     # Phase 5: Acquisition Degradation
     ("acquisition_degradation", apply_acquisition_degradation),
 
-    # Phase 6: Current Year Manual Override (last — preserves analyst overrides)
+    # Phase 6: Current Year Manual Override (preserves analyst overrides)
     ("current_year_override", apply_current_year_override),
+
+    # Phase 7: Sub-Quality Assignment (runs last, reads calculated_qot)
+    ("sub_quality_assignment", apply_sub_quality_assignment),
 ]
 
 
