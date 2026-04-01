@@ -6,7 +6,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 
-from utils.config import DEFAULT_CONFIG, export_config, import_config
+from utils.config import DEFAULT_CONFIG, SPEC_ALIGNED_CONFIG, export_config, import_config
 from utils.caching import get_cached_connection, load_temporal_metrics, load_production_qot
 from utils.data_loader import get_data_status
 from components.parameter_inputs import render_all_parameter_tabs
@@ -130,6 +130,18 @@ def main():
 
         # Config management
         st.subheader("Config")
+
+        # Preset selector
+        preset = st.selectbox("Config Preset", ["Custom", "Spec-Aligned (2026)", "Legacy Default"])
+        if preset == "Spec-Aligned (2026)" and st.session_state.config.get('use_spec_pipeline') != True:
+            st.session_state.config = SPEC_ALIGNED_CONFIG.copy()
+            st.session_state.results = None
+            st.rerun()
+        elif preset == "Legacy Default" and st.session_state.config.get('baseline_strategy') != 'quality_table':
+            st.session_state.config = DEFAULT_CONFIG.copy()
+            st.session_state.results = None
+            st.rerun()
+
         col1, col2, col3 = st.columns(3)
         with col1:
             if st.button("Reset", use_container_width=True):

@@ -5,17 +5,22 @@ import json
 import yaml
 
 DEFAULT_TIER_1_VCS = [
-    'Sequoia Capital', 'Andreessen Horowitz', 'Accel', 'Benchmark',
-    'Kleiner Perkins', 'GV', 'Greylock Partners', 'Bessemer Venture Partners',
-    'Index Ventures', 'Lightspeed Venture Partners', 'NEA', 'Founders Fund',
-    'General Catalyst', 'Tiger Global Management', 'Insight Partners',
-    'Battery Ventures', 'Redpoint Ventures', 'Matrix Partners',
-    'Union Square Ventures', 'First Round Capital', 'Spark Capital',
-    'Thrive Capital', 'Coatue Management',
+    'Sequoia Capital', 'Andreessen Horowitz',
 ]
 
-# For backward compatibility
-TIER_1_VCS = DEFAULT_TIER_1_VCS
+DEFAULT_TIER_2_VCS = [
+    'Accel', 'Benchmark', 'Kleiner Perkins', 'GV', 'Greylock Partners',
+    'Bessemer Venture Partners', 'Index Ventures', 'Lightspeed Venture Partners',
+    'NEA', 'Founders Fund', 'General Catalyst', 'Tiger Global Management',
+    'Insight Partners', 'Battery Ventures', 'Redpoint Ventures',
+    'Matrix Partners', 'Union Square Ventures', 'First Round Capital',
+    'Spark Capital', 'Thrive Capital', 'Coatue Management',
+]
+
+ALL_NAMED_VCS = DEFAULT_TIER_1_VCS + DEFAULT_TIER_2_VCS
+
+# For backward compatibility (old code expects all 23 in one list)
+TIER_1_VCS = ALL_NAMED_VCS
 
 # Funding stages and the round names that map to each
 FUNDING_STAGES = {
@@ -166,6 +171,73 @@ DEFAULT_CONFIG = {
     "public_low_growth_target": 3,
     "enable_public_large_rev_upgrade": True,
     "public_large_rev_threshold": 1_000_000_000,
+}
+
+
+SPEC_ALIGNED_CONFIG = {
+    **DEFAULT_CONFIG,
+
+    # Baseline: mosaic-based, not quality_table stretch
+    "baseline_strategy": "mosaic_only",
+
+    # Mosaic thresholds per spec: 850/650/500 (not 900/750/650)
+    "mosaic_900_threshold": 850.0,
+    "mosaic_750_threshold": 650.0,
+    "mosaic_650_threshold": 500.0,
+
+    # Hot/Iconic are earned through Q5 promotion, not auto-assigned
+    "upgrade_hot_to_5": False,
+    "upgrade_iconic_to_5": False,
+
+    # Enable no-mosaic fallback (new rule)
+    "enable_no_mosaic_fallback": True,
+
+    # Enable consolidated Q5 promotions (new rule)
+    "enable_q5_promotions": True,
+
+    # Q5 validation guards — all enabled
+    "enable_stagnant_val_rev_check": True,
+    "enable_legacy_exclusion": True,
+    "enable_rev_declining_exclusion": True,
+
+    # Drop rules — all enabled per spec
+    "enable_val_decline_downgrade": True,
+    "enable_growth_rev_stagnation": True,
+    "enable_revenue_decline_downgrade": True,
+    "enable_stagnation_downgrade": True,
+    "enable_pe_deal_decline_downgrade": True,
+    "enable_public_to_pe_downgrade": True,
+    "enable_taken_private_cap": True,
+
+    # Segment-aware stagnation (new behavior)
+    "stagnation_segment_aware": True,
+    "vc_val_stagnation_years": 5,
+    "growth_rev_stagnation_years": 3,
+    "public_rev_stagnation_years": 5,
+
+    # Disable non-spec rules
+    "enable_public_low_growth_downgrade": False,
+    "enable_public_large_rev_upgrade": False,
+    "enable_no_recent_funding_check": False,
+
+    # Disable old scattered rules (subsumed by q5_promotions)
+    "enable_exceptional_val_growth": False,
+    "enable_pe_hot_rules": False,
+    "enable_rev_growth_upgrade": False,
+    "enable_tier1_vc_upgrade": False,
+    "enable_revenue_upgrade": False,
+    "public_rev_upgrade_enabled": False,
+    "enable_unicorn_upgrade": False,
+    "enable_decacorn_upgrade": False,
+    "enable_val_growth_upgrade": False,
+    "enable_decacorn_revenue_validation": False,
+    "enable_unicorn_growth_validation": False,
+
+    # Current year manual override
+    "enable_current_year_override": True,
+
+    # Use the spec pipeline
+    "use_spec_pipeline": True,
 }
 
 

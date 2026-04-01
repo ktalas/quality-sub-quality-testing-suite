@@ -37,21 +37,24 @@ def apply_base_quality_stretch(df, params):
 
 
 def apply_base_mosaic_only(df, params):
-    """Derive baseline quality purely from mosaic_score thresholds."""
+    """Derive baseline quality purely from mosaic_score thresholds.
+    Spec thresholds: 850+ -> Q4, 650-849 -> Q3, 500-649 -> Q2, <500 -> Q1.
+    """
     mosaic = df['mosaic_score'].fillna(0)
     qot = pd.Series(1, index=df.index)
 
     # Apply thresholds in ascending order (lowest first, highest overwrites)
-    t650 = params.get('mosaic_650_threshold', 650)
-    t750 = params.get('mosaic_750_threshold', 750)
-    t900 = params.get('mosaic_900_threshold', 900)
-    f650 = params.get('mosaic_650_floor', 2)
-    f750 = params.get('mosaic_750_floor', 3)
-    f900 = params.get('mosaic_900_floor', 4)
+    # Config keys kept as mosaic_650/750/900 for backwards compat, values differ per config
+    t_low = params.get('mosaic_650_threshold', 500)
+    t_mid = params.get('mosaic_750_threshold', 650)
+    t_high = params.get('mosaic_900_threshold', 850)
+    f_low = params.get('mosaic_650_floor', 2)
+    f_mid = params.get('mosaic_750_floor', 3)
+    f_high = params.get('mosaic_900_floor', 4)
 
-    qot = qot.where(mosaic < t650, f650)
-    qot = qot.where(mosaic < t750, f750)
-    qot = qot.where(mosaic < t900, f900)
+    qot = qot.where(mosaic < t_low, f_low)
+    qot = qot.where(mosaic < t_mid, f_mid)
+    qot = qot.where(mosaic < t_high, f_high)
 
     df['calculated_qot'] = qot.astype(int).clip(1, 5)
     return df
@@ -116,6 +119,226 @@ def apply_mosaic_upgrades(df, params):
         df.loc[mask, 'calculated_qot'] = floor
         df = _tag(df, mask, f'mosaic_{int(thresh)}')
 
+    return df
+
+
+# ── Spec Rules: No-Mosaic Fallback ────────────────────────────────────────
+
+def apply_no_mosaic_fallback(df, params):
+    """Point-based quality for companies without mosaic scores.
+    Mutually exclusive tiers for valuation and revenue; additive for growth/VC.
+    """
+    if not params.get("enable_no_mosaic_fallback", False):
+        return df
+
+    no_mosaic = df['mosaic_score'].isna() | (df['mosaic_score'] == 0)
+    if not no_mosaic.any():
+        return df
+
+    points = pd.Series(0, index=df.index, dtype=int)
+
+    # Valuation tier (mutually exclusive, take highest)
+    eoy_val = df['eoy_valuation'].fillna(0)  # in millions
+    val_points = pd.Series(0, index=df.index, dtype=int)
+    val_points = val_points.where(eoy_val < 100, 1)    # $100M+
+    val_points = val_points.where(eoy_val < 500, 2)    # $500M+
+    val_points = val_points.where(~df['is_unicorn'].fillna(False), 3)  # $1B+ unicorn
+    points += val_points
+
+    # Revenue tier (mutually exclusive, take highest)
+    rev = df['revenue'].fillna(0)
+    rev_points = pd.Series(0, index=df.index, dtype=int)
+    rev_points = rev_points.where(rev < 50_000_000, 1)    # $50M+
+    rev_points = rev_points.where(rev < 100_000_000, 2)   # $100M+
+    points += rev_points
+
+    # Growth signals (additive)
+    val_growth = df['val_growth_3y'].fillna(0)
+    points += (val_growth >= 0.30).astype(int)
+
+    rev_growth = df['rev_growth_3y'].fillna(0)
+    points += (rev_growth >= 0.30).astype(int)
+
+    # VC backing: any of the 23 named VCs (Tier 1 + Tier 2)
+    has_vc = df['has_tier1_vc'].fillna(False)
+    points += has_vc.astype(int)
+
+    # Map points to quality
+    quality = pd.Series(1, index=df.index, dtype=int)
+    quality = quality.where(points < 1, 2)   # 1 point -> Q2
+    quality = quality.where(points < 2, 3)   # 2-3 points -> Q3
+    quality = quality.where(points < 4, 4)   # 4+ points -> Q4
+
+    # Only apply to companies without mosaic
+    mask = no_mosaic & (quality > df['calculated_qot'])
+    df.loc[mask, 'calculated_qot'] = quality[mask]
+    df = _tag(df, mask, 'no_mosaic_fallback')
+
+    return df
+
+
+# ── Spec Rules: Consolidated Q5 Promotions ────────────────────────────────
+
+def apply_q5_promotions(df, params):
+    """Consolidated Q5 promotion paths per segment, per spec.
+    No minimum quality floor — any company meeting criteria gets Q5.
+    """
+    if not params.get("enable_q5_promotions", False):
+        return df
+
+    from utils.config import DEFAULT_TIER_1_VCS
+
+    eoy_val = df['eoy_valuation'].fillna(0)   # in millions
+    rev = df['revenue'].fillna(0)              # in dollars
+    val_g = df['val_growth_3y'].fillna(-999)
+    rev_g = df['rev_growth_3y'].fillna(-999)
+    is_vc_growth = df['segment'].isin(['VC', 'Growth'])
+    is_public = df['segment'] == 'Public'
+    is_pe = df['segment'] == 'PE'
+    already_q5 = df['calculated_qot'] == 5
+
+    # --- VC/Growth paths ---
+    # Path 1: Decacorn + 30% val growth + $500M revenue
+    vc_path1 = (
+        is_vc_growth &
+        df['is_decacorn'].fillna(False) &
+        (val_g >= 0.30) &
+        (rev >= 500_000_000)
+    )
+    # Path 2: Unicorn + 75% val growth + $100M revenue
+    vc_path2 = (
+        is_vc_growth &
+        df['is_unicorn'].fillna(False) &
+        (val_g >= 0.75) &
+        (rev >= 100_000_000)
+    )
+    # Path 3: 200%+ valuation growth over 3 years (with $200M minimum valuation)
+    val_growth_min_valuation = params.get('q5_val_growth_min_valuation', 200)  # $200M in millions
+    vc_path3 = (
+        is_vc_growth &
+        (val_g >= 2.00) &
+        (eoy_val >= val_growth_min_valuation)
+    )
+    # Path 4: Tier 1 VC (Sequoia/a16z only) + $500M+ valuation + 50%+ growth
+    tier1_list = params.get('tier1_vc_list', DEFAULT_TIER_1_VCS)
+    if '_investor_data' in params and tier1_list:
+        inv_df = params['_investor_data']
+        t1_set = set(tier1_list)
+        t1_cos = inv_df[inv_df['investor_name'].isin(t1_set)].groupby(
+            ['company_id', 'year']
+        ).size().reset_index(name='_cnt')
+        t1_pairs = set(zip(t1_cos['company_id'], t1_cos['year']))
+        has_t1_strict = pd.Series(
+            [((cid, yr) in t1_pairs) for cid, yr in zip(df['company_id'], df['year'])],
+            index=df.index,
+        )
+    elif 'has_tier1_vc' in df.columns:
+        # Fallback: use precomputed flag (includes all 23, not just 2)
+        # This is imprecise but best available without investor data
+        has_t1_strict = df['has_tier1_vc'].fillna(False)
+    else:
+        has_t1_strict = pd.Series(False, index=df.index)
+
+    vc_path4 = (
+        is_vc_growth &
+        has_t1_strict &
+        (eoy_val >= 500) &  # $500M in millions
+        (val_g >= 0.50)
+    )
+    # Path 5: 150%+ revenue growth + $100M revenue
+    vc_path5 = (
+        is_vc_growth &
+        (rev_g >= 1.50) &
+        (rev >= 100_000_000)
+    )
+
+    # --- Public paths ---
+    pub_path1 = (
+        is_public &
+        (rev >= 1_000_000_000) &
+        (rev_g >= 0.30)
+    )
+    pub_path2 = (
+        is_public &
+        (rev >= 5_000_000_000) &
+        (rev_g >= 0.20)
+    )
+
+    # --- PE paths (stricter) ---
+    pe_path1 = (
+        is_pe &
+        (rev >= 20_000_000_000) &
+        (rev_g >= 0.75)
+    )
+    pe_path2 = (
+        is_pe &
+        (rev >= 50_000_000_000) &
+        (rev_g >= 0.50)
+    )
+    pe_path3 = (
+        is_pe &
+        df['is_decacorn'].fillna(False) &
+        (rev_g >= 0.75)
+    )
+
+    # Apply all paths, tag with which path triggered
+    paths = [
+        (vc_path1, 'q5_vc_decacorn_val_rev'),
+        (vc_path2, 'q5_vc_unicorn_val_rev'),
+        (vc_path3, 'q5_vc_exceptional_val_growth'),
+        (vc_path4, 'q5_vc_tier1_vc_val_growth'),
+        (vc_path5, 'q5_vc_rev_growth'),
+        (pub_path1, 'q5_public_1b_rev_growth'),
+        (pub_path2, 'q5_public_5b_rev_growth'),
+        (pe_path1, 'q5_pe_20b_rev_growth'),
+        (pe_path2, 'q5_pe_50b_rev_growth'),
+        (pe_path3, 'q5_pe_decacorn_rev_growth'),
+    ]
+
+    for path_mask, path_name in paths:
+        promote = path_mask & ~already_q5
+        if promote.any():
+            df.loc[promote, 'calculated_qot'] = 5
+            df = _tag(df, promote, path_name)
+            # Update already_q5 so later paths don't re-tag
+            already_q5 = already_q5 | promote
+
+    return df
+
+
+# ── Spec Rules: Current Year Manual Override ──────────────────────────────
+
+def apply_current_year_override(df, params):
+    """Override calculated quality with manual 'user' overrides for current year.
+    Only applies where the quality source is 'user' (manually set in Rolodex).
+    """
+    if not params.get("enable_current_year_override", False):
+        return df
+
+    override_df = params.get('_manual_overrides_df')
+    if override_df is None or len(override_df) == 0:
+        return df
+
+    from datetime import datetime
+    current_year = params.get('current_year', datetime.now().year)
+
+    current_mask = df['year'] == current_year
+    if not current_mask.any():
+        return df
+
+    # Merge overrides onto current-year rows
+    override_lookup = override_df.set_index('company_id')['manual_quality'].to_dict()
+
+    mask = pd.Series(False, index=df.index)
+    for idx in df.index[current_mask]:
+        cid = df.at[idx, 'company_id']
+        if cid in override_lookup:
+            override_val = int(override_lookup[cid])
+            if 1 <= override_val <= 5 and override_val != df.at[idx, 'calculated_qot']:
+                df.at[idx, 'calculated_qot'] = override_val
+                mask.at[idx] = True
+
+    df = _tag(df, mask, 'current_year_override')
     return df
 
 
@@ -430,19 +653,59 @@ def apply_revenue_decline_downgrade(df, params):
 
 
 def apply_stagnation_downgrade(df, params):
-    """Multi-year stagnation downgrade (revenue or valuation)."""
+    """Multi-year stagnation downgrade.
+    Segment-aware mode (spec): VC=val stagnation 5yr, Growth=rev 3yr, Public=rev 5yr.
+    Legacy mode: generic rev/val stagnation across all segments.
+    """
     if not params.get("enable_stagnation_downgrade", False):
         return df
-    rev_thresh = params.get('rev_stagnation_years_threshold', 5)
-    val_thresh = params.get('val_stagnation_years_threshold', 5)
-    amount = params.get('stagnation_downgrade_amount', 1)
 
-    mask = (
-        ((df['rev_stagnation_years'] >= rev_thresh) | (df['val_stagnation_years'] >= val_thresh)) &
-        (df['calculated_qot'] > 1)
-    )
-    df.loc[mask, 'calculated_qot'] = (df.loc[mask, 'calculated_qot'] - amount).clip(lower=1)
-    return _tag(df, mask, 'stagnation_downgrade')
+    if params.get("stagnation_segment_aware", False):
+        # Spec-aligned: segment-specific stagnation rules
+        vc_years = params.get('vc_val_stagnation_years', 5)
+        growth_years = params.get('growth_rev_stagnation_years', 3)
+        public_years = params.get('public_rev_stagnation_years', 5)
+
+        vc_mask = (
+            (df['segment'] == 'VC') &
+            (df['val_stagnation_years'] >= vc_years) &
+            (df['calculated_qot'] > 1)
+        )
+        growth_mask = (
+            (df['segment'] == 'Growth') &
+            (df['rev_stagnation_years'] >= growth_years) &
+            (df['calculated_qot'] > 1)
+        )
+        public_mask = (
+            (df['segment'] == 'Public') &
+            (df['rev_stagnation_years'] >= public_years) &
+            (df['calculated_qot'] > 1)
+        )
+
+        for seg_mask, tag_name in [
+            (vc_mask, 'stagnation_vc_val'),
+            (growth_mask, 'stagnation_growth_rev'),
+            (public_mask, 'stagnation_public_rev'),
+        ]:
+            if seg_mask.any():
+                df.loc[seg_mask, 'calculated_qot'] = (
+                    df.loc[seg_mask, 'calculated_qot'] - 1
+                ).clip(lower=1)
+                df = _tag(df, seg_mask, tag_name)
+    else:
+        # Legacy mode: generic stagnation across all segments
+        rev_thresh = params.get('rev_stagnation_years_threshold', 5)
+        val_thresh = params.get('val_stagnation_years_threshold', 5)
+        amount = params.get('stagnation_downgrade_amount', 1)
+
+        mask = (
+            ((df['rev_stagnation_years'] >= rev_thresh) | (df['val_stagnation_years'] >= val_thresh)) &
+            (df['calculated_qot'] > 1)
+        )
+        df.loc[mask, 'calculated_qot'] = (df.loc[mask, 'calculated_qot'] - amount).clip(lower=1)
+        df = _tag(df, mask, 'stagnation_downgrade')
+
+    return df
 
 
 def apply_val_decline_downgrade(df, params):
@@ -490,7 +753,7 @@ def apply_segment_transition_rules(df, params):
     if params.get("enable_taken_private_cap", False):
         mask = (
             (df['prev_segment'] == 'Public') &
-            (df['segment'] == 'PE') &
+            (df['segment'].isin(['PE', 'Acquired'])) &
             (df['calculated_qot'] > 3)
         )
         df.loc[mask, 'calculated_qot'] = 3
