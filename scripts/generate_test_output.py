@@ -287,6 +287,15 @@ def generate_outputs(scored_df, conn, output_dir):
     tab3.to_csv(tab3_path, index=False)
     print(f"  Tab 3: {len(tab3)} other quality changes -> {tab3_path}")
 
+    # --- Write single Excel workbook ---
+    workbook_path = os.path.join(output_dir, 'QOT Spec-Aligned Testing (April 2026).xlsx')
+    with pd.ExcelWriter(workbook_path, engine='openpyxl') as writer:
+        tab1.to_excel(writer, sheet_name='Changes to Q5', index=False)
+        tab2.to_excel(writer, sheet_name='Sub-Quality Designations', index=False)
+        tab4.to_excel(writer, sheet_name='Sub-Quality Transitions', index=False)
+        tab3.to_excel(writer, sheet_name='All Other Quality Changes', index=False)
+    print(f"\n  Workbook: {workbook_path}")
+
     return tab1, tab2, tab3, tab4
 
 
