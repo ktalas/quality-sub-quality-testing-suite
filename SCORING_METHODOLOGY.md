@@ -217,6 +217,8 @@ Points are awarded across four categories. Within the valuation and revenue cate
 
 There is no minimum quality floor for Q5 promotion. Any company meeting the compound criteria for its segment receives Q5. Each promotion is tagged with the specific path that triggered it for auditability.
 
+**Acquired companies** use their last non-Acquired segment for Q5 path evaluation. For example, if Wiz was "Growth" before being acquired, it is evaluated against the VC/Growth Q5 paths. If Slack was "Public" before acquisition, it uses the Public paths. The system looks back through the company's full segment history to find the most recent non-Acquired segment. The acquisition degradation rule (Step 8) separately handles post-acquisition quality decay.
+
 ### VC/Growth Companies (5 paths)
 
 | Path | Tag | Conditions (all must be true) |
@@ -328,7 +330,7 @@ PE-segment companies with 50%+ 3-year deal activity decline receive -1 quality.
 
 **Function:** `apply_segment_transition_rules()`
 
-Companies that were Public and transitioned to PE or Acquired segments with quality > Q3 are capped at Q3. This reflects the uncertainty and disruption that accompanies going-private transactions.
+Companies that were Public and transitioned to PE (actual take-private transactions) with quality > Q3 are capped at Q3. This only applies to Public → PE transitions, not tech acquisitions (Public/Growth/VC → Acquired). Acquired companies use their pre-acquisition segment for Q5 path evaluation instead.
 
 ---
 
@@ -368,11 +370,12 @@ Is calculated_qot == 5?
   YES --> Hot
 
 Is calculated_qot == 4?
-  YES --> Was this company Q5 (Hot) within the last 5 years?
-    YES --> Is growth top-25% for segment?
+  --> Check Iconic Path A: Was Q5 within last 5 years AND top-25% growth?
       YES --> Iconic
-      NO  --> Incumbent
-    NO (last Q5 was 5+ years ago, or never Q5) --> Incumbent
+  --> Check Iconic Path B: Was EVER Q5 AND is a category leader?
+      (Category leader = 10+ years at Q4+, OR $1B+ revenue, OR market_score >= 900)
+      YES --> Iconic
+  --> Neither path met --> Incumbent
 
 Is calculated_qot == 3?
   YES --> Incumbent
@@ -380,6 +383,17 @@ Is calculated_qot == 3?
 Is calculated_qot <= 2?
   YES --> Legacy
 ```
+
+### Iconic Path Details
+
+**Path A (Growth-based):** Requires BOTH recency (Q5 within last 5 years) and top-quartile growth. Catches companies that recently peaked and are still growing fast (e.g., Grafana Labs).
+
+**Path B (Category Leadership):** Requires that the company was EVER Q5 (no recency requirement) and meets any one category leadership signal:
+- **Longevity:** 10+ years at Q4+ in calculated history
+- **Revenue scale:** $1B+ annual revenue
+- **Market score:** CBI market_score >= 900 (private companies only)
+
+Path B captures companies that defined their category years ago and still dominate even if growth has slowed (e.g., Box, Salesforce, ServiceNow).
 
 ### Long-Stagnant Incumbent to Legacy
 
