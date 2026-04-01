@@ -218,6 +218,59 @@ def generate_outputs(scored_df, conn, output_dir):
     for sq in ['Hot', 'Iconic', 'Incumbent', 'Legacy']:
         print(f"    Model {sq}: {model_counts.get(sq, 0)}")
 
+    # --- Tab 4: Sub-Quality Transitions ---
+    # Show every company where sub_quality designation changed, grouped by transition
+    transitions = latest.copy()
+    transitions['current_sq'] = transitions['sub_quality'].fillna('None')
+    transitions['model_sq'] = transitions['calculated_sub_quality'].fillna('None')
+    transitions = transitions[transitions['current_sq'] != transitions['model_sq']]
+
+    # Define transition categories for sorting
+    transition_order = {
+        # Newly designated as Hot (promoted)
+        'None → Hot': 0,
+        'Iconic → Hot': 1,
+        'Incumbent → Hot': 2,
+        # Newly Iconic
+        'None → Iconic': 3,
+        'Hot → Iconic': 4,
+        'Incumbent → Iconic': 5,
+        # Demoted from Hot
+        'Hot → Incumbent': 6,
+        'Hot → Legacy': 7,
+        # Iconic demotions
+        'Iconic → Incumbent': 8,
+        'Iconic → Legacy': 9,
+        # Incumbent demotions
+        'Incumbent → Legacy': 10,
+        # Legacy upgrades
+        'Legacy → Incumbent': 11,
+        'Legacy → Iconic': 12,
+        'Legacy → Hot': 13,
+    }
+
+    transitions['transition'] = transitions['current_sq'] + ' → ' + transitions['model_sq']
+    transitions['sort_key'] = transitions['transition'].map(transition_order).fillna(99)
+    transitions = transitions.sort_values(['sort_key', 'company_name'])
+
+    tab4 = transitions[[
+        'company_id', 'company_name', 'segment', 'mosaic_score',
+        'transition', 'current_sq', 'model_sq',
+        'production_qot', 'calculated_qot', 'last_rule_applied'
+    ]].copy()
+    tab4 = tab4.rename(columns={
+        'current_sq': 'current_sub_quality',
+        'model_sq': 'model_sub_quality',
+    })
+    tab4_path = os.path.join(output_dir, 'Tab 4 - Sub-Quality Transitions.csv')
+    tab4.to_csv(tab4_path, index=False)
+
+    # Summary by transition type
+    print(f"  Tab 4: {len(tab4)} sub-quality transitions -> {tab4_path}")
+    transition_counts = tab4['transition'].value_counts()
+    for t in sorted(transition_counts.index, key=lambda x: transition_order.get(x, 99)):
+        print(f"    {t}: {transition_counts[t]}")
+
     # --- Tab 3: All Other Quality Changes ---
     other_changes = latest[
         (latest['delta'] != 0) &
@@ -234,7 +287,7 @@ def generate_outputs(scored_df, conn, output_dir):
     tab3.to_csv(tab3_path, index=False)
     print(f"  Tab 3: {len(tab3)} other quality changes -> {tab3_path}")
 
-    return tab1, tab2, tab3
+    return tab1, tab2, tab3, tab4
 
 
 def main():
@@ -266,14 +319,15 @@ def main():
 
     # Generate test outputs
     print("\nGenerating test output CSVs...")
-    tab1, tab2, tab3 = generate_outputs(scored, conn, args.output_dir)
+    tab1, tab2, tab3, tab4 = generate_outputs(scored, conn, args.output_dir)
 
     # Summary
     print("\n" + "=" * 50)
     print("Summary:")
     print(f"  Q5 changes: {len(tab1)} companies")
-    print(f"  Hot/Iconic: {len(tab2)} companies")
-    print(f"  Other changes: {len(tab3)} companies")
+    print(f"  Sub-quality designations: {len(tab2)} companies")
+    print(f"  Sub-quality transitions: {len(tab4)} companies")
+    print(f"  Other quality changes: {len(tab3)} companies")
 
     # Optionally publish to DB
     if args.publish:
