@@ -192,9 +192,21 @@ def apply_q5_promotions(df, params):
     rev = df['revenue'].fillna(0)              # in dollars
     val_g = df['val_growth_3y'].fillna(-999)
     rev_g = df['rev_growth_3y'].fillna(-999)
-    is_vc_growth = df['segment'].isin(['VC', 'Growth'])
-    is_public = df['segment'] == 'Public'
-    is_pe = df['segment'] == 'PE'
+
+    # For Acquired companies, use their last non-Acquired segment for Q5 path evaluation
+    eval_segment = df['segment'].copy()
+    acquired_mask = df['segment'] == 'Acquired'
+    if acquired_mask.any():
+        non_acq = df[df['segment'] != 'Acquired'].sort_values('year')
+        last_non_acq = non_acq.groupby('company_id')['segment'].last()
+        for idx in df.index[acquired_mask]:
+            cid = df.at[idx, 'company_id']
+            if cid in last_non_acq.index:
+                eval_segment.at[idx] = last_non_acq[cid]
+
+    is_vc_growth = eval_segment.isin(['VC', 'Growth'])
+    is_public = eval_segment == 'Public'
+    is_pe = eval_segment == 'PE'
     already_q5 = df['calculated_qot'] == 5
 
     # --- VC/Growth paths ---
@@ -382,6 +394,21 @@ def apply_sub_quality_assignment(df, params):
 
     top_growth = (rev_g >= rev_p75) | (val_g >= val_p75)
 
+    # Step 2b: Category leadership signals for Iconic Path B
+    longevity_threshold = params.get('iconic_longevity_years', 10)
+    revenue_scale = params.get('iconic_revenue_scale', 1_000_000_000)
+    market_score_threshold = params.get('iconic_market_score', 900)
+
+    top_year_counts = df[df['calculated_qot'] >= 4].groupby('company_id')['year'].count().to_dict()
+    has_longevity = df['company_id'].map(top_year_counts).fillna(0) >= longevity_threshold
+    has_revenue_scale = df['revenue'].fillna(0) >= revenue_scale
+
+    has_market_dominance = pd.Series(False, index=df.index)
+    if 'market_score' in df.columns:
+        has_market_dominance = df['market_score'].fillna(0) >= market_score_threshold
+
+    category_leader = has_longevity | has_revenue_scale | has_market_dominance
+
     # Step 3: Build hot-years lookup per company
     # For each company-year, check if Hot (Q5) within prior N years
     is_q5 = df['calculated_qot'] == 5
@@ -406,8 +433,18 @@ def apply_sub_quality_assignment(df, params):
     hot_mask = eligible & (qot == 5)
     df.loc[hot_mask, 'calculated_sub_quality'] = 'Hot'
 
-    # Iconic: Q4 + recent Hot + top growth
-    iconic_mask = eligible & (qot == 4) & recent_hot & top_growth
+    # Iconic: Q4 + meets either path:
+    # Path A (growth): recently Hot (5yr) + top-quartile growth for segment
+    # Path B (category leader): was EVER Hot + (10yr+ at Top, $1B+ rev, or market_score 900+)
+    ever_hot = pd.Series(False, index=df.index)
+    if len(eligible_idx) > 0:
+        ever_hot.loc[eligible_idx] = df.loc[eligible_idx, 'company_id'].map(
+            lambda cid: len(q5_by_company.get(cid, set())) > 0
+        )
+
+    iconic_path_a = recent_hot & top_growth
+    iconic_path_b = ever_hot & category_leader
+    iconic_mask = eligible & (qot == 4) & (iconic_path_a | iconic_path_b)
     df.loc[iconic_mask, 'calculated_sub_quality'] = 'Iconic'
 
     # Incumbent: Q3-Q4, eligible, not already Hot or Iconic
@@ -855,9 +892,10 @@ def apply_segment_transition_rules(df, params):
         df = _tag(df, mask, 'public_to_pe_downgrade')
 
     if params.get("enable_taken_private_cap", False):
+        # Only actual take-privates (Public → PE), not tech acquisitions
         mask = (
             (df['prev_segment'] == 'Public') &
-            (df['segment'].isin(['PE', 'Acquired'])) &
+            (df['segment'] == 'PE') &
             (df['calculated_qot'] > 3)
         )
         df.loc[mask, 'calculated_qot'] = 3

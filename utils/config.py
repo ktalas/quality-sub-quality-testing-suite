@@ -241,6 +241,9 @@ SPEC_ALIGNED_CONFIG = {
     "sub_quality_recency_years": 5,
     "sub_quality_growth_percentile": 0.75,
     "incumbent_to_legacy_years": 5,
+    "iconic_longevity_years": 10,
+    "iconic_revenue_scale": 1_000_000_000,
+    "iconic_market_score": 900,
 
     # Use the spec pipeline
     "use_spec_pipeline": True,

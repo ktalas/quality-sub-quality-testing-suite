@@ -17,7 +17,7 @@ def compute_metrics(conn, segments_df: pd.DataFrame) -> pd.DataFrame:
 
     # 1. Company quality scores
     quality_df = pd.read_sql("""
-        SELECT company_id, quality_score, sub_quality
+        SELECT company_id, quality_score, sub_quality, market_score
         FROM companies WHERE delete = false OR delete IS NULL
     """, conn)
     base_df = base_df.merge(quality_df, on='company_id', how='left')
