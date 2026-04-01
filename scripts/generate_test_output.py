@@ -287,12 +287,32 @@ def generate_outputs(scored_df, conn, output_dir):
     tab3.to_csv(tab3_path, index=False)
     print(f"  Tab 3: {len(tab3)} other quality changes -> {tab3_path}")
 
+    # --- Tab 5: All Top Quality Companies + Sub-Quality ---
+    top_companies = latest[latest['calculated_qot'] >= 4].copy()
+    tab5 = top_companies[[
+        'company_id', 'company_name', 'segment', 'mosaic_score',
+        'sub_quality', 'calculated_sub_quality', 'calculated_qot',
+        'last_rule_applied'
+    ]].copy()
+    tab5 = tab5.rename(columns={
+        'sub_quality': 'current_sub_quality',
+        'calculated_sub_quality': 'model_sub_quality',
+    })
+    tab5 = tab5.sort_values(['calculated_qot', 'model_sub_quality', 'company_name'],
+                            ascending=[False, True, True])
+    print(f"  Tab 5: {len(tab5)} Top quality companies")
+    for q in [5, 4]:
+        q_sub = tab5[tab5['calculated_qot'] == q]
+        sq_counts = q_sub['model_sub_quality'].value_counts()
+        print(f"    Q{q}: {len(q_sub)} companies - {', '.join(f'{k}: {v}' for k, v in sq_counts.items())}")
+
     # --- Write single Excel workbook ---
     workbook_path = os.path.join(output_dir, 'QOT Spec-Aligned Testing (April 2026).xlsx')
     with pd.ExcelWriter(workbook_path, engine='openpyxl') as writer:
         tab1.to_excel(writer, sheet_name='Changes to Q5', index=False)
         tab2.to_excel(writer, sheet_name='Sub-Quality Designations', index=False)
         tab4.to_excel(writer, sheet_name='Sub-Quality Transitions', index=False)
+        tab5.to_excel(writer, sheet_name='All Top Companies', index=False)
         tab3.to_excel(writer, sheet_name='All Other Quality Changes', index=False)
     print(f"\n  Workbook: {workbook_path}")
 
