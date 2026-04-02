@@ -21,12 +21,7 @@ def run_segmentation(conn) -> pd.DataFrame:
             c.mosaic_score,
             c.found_yr,
             c.stock_symbol,
-            CASE
-                WHEN d.deal_date IS NOT NULL
-                     AND d.deal_date::text ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$'
-                THEN EXTRACT(YEAR FROM d.deal_date)
-                ELSE NULL
-            END as deal_year,
+            EXTRACT(YEAR FROM d.deal_date) as deal_year,
             COUNT(DISTINCT CASE WHEN d.funding_round_category = 'IPO' THEN d.deal_id END) as ipo_count,
             COUNT(DISTINCT CASE
                 WHEN d.funding_round IN (
@@ -61,7 +56,7 @@ def run_segmentation(conn) -> pd.DataFrame:
         FROM companies c
         LEFT JOIN deals d ON c.company_id = d.funded_company_id
         WHERE (c.delete = false OR c.delete IS NULL OR c.delete = 'false')
-        GROUP BY c.company_id, c.company_name, c.mosaic_score, c.found_yr, c.stock_symbol, deal_year
+        GROUP BY c.company_id, c.company_name, c.mosaic_score, c.found_yr, c.stock_symbol, EXTRACT(YEAR FROM d.deal_date)
     ),
     company_deals_cumulative AS (
         SELECT

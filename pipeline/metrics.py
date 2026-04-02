@@ -22,32 +22,57 @@ def compute_metrics(conn, segments_df: pd.DataFrame) -> pd.DataFrame:
     """, conn)
     base_df = base_df.merge(quality_df, on='company_id', how='left')
 
-    # 2. Valuations by year
+    # 2a. Valuations by year — uses get_company_valuation_by_year() which returns
+    # market cap for public companies, deal valuations for private. Returns raw dollars.
+    # Write company-year pairs to temp table, then batch-query the function.
+    cy_pairs = base_df[['company_id', 'year']].drop_duplicates()
+    cur = conn.cursor()
+    cur.execute("CREATE TEMP TABLE IF NOT EXISTS _cy_pairs (company_id int, year int)")
+    cur.execute("DELETE FROM _cy_pairs")
+    from io import StringIO
+    buf = StringIO()
+    cy_pairs.to_csv(buf, index=False, header=False)
+    buf.seek(0)
+    cur.copy_from(buf, '_cy_pairs', sep=',', columns=('company_id', 'year'))
+    conn.commit()
+
     valuation_df = pd.read_sql("""
+        SELECT cy.company_id, cy.year,
+               get_company_valuation_by_year(cy.company_id, cy.year) / 1000000.0 as eoy_valuation
+        FROM _cy_pairs cy
+    """, conn)
+    valuation_df['year'] = valuation_df['year'].astype(int)
+    cur.execute("DROP TABLE IF EXISTS _cy_pairs")
+    conn.commit()
+
+    # 2b. Deal activity by year (deal_size, funding_rounds, deal_count — separate from valuation)
+    deal_activity_df = pd.read_sql("""
         SELECT c.company_id,
                EXTRACT(YEAR FROM d.deal_date::date)::int as year,
-               d.valuation_in_millions as eoy_valuation,
                d.deal_size_in_millions as eoy_deal_size,
                d.funding_round, d.deal_id
         FROM companies c
         JOIN deals d ON c.company_id = d.funded_company_id
         WHERE (c.delete = false OR c.delete IS NULL)
-          AND d.valuation_in_millions IS NOT NULL AND d.valuation_in_millions > 0
           AND d.deal_date IS NOT NULL
           AND d.deal_date::text ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
     """, conn)
-    valuation_df['year'] = valuation_df['year'].astype(int)
+    deal_activity_df['year'] = deal_activity_df['year'].astype(int)
 
-    if len(valuation_df) > 0:
-        val_agg = valuation_df.groupby(['company_id', 'year']).agg(
-            eoy_valuation=('eoy_valuation', 'max'),
+    if len(deal_activity_df) > 0:
+        deal_agg = deal_activity_df.groupby(['company_id', 'year']).agg(
             eoy_deal_size=('eoy_deal_size', 'max'),
-            funding_rounds=('funding_round', lambda x: ', '.join(sorted(set(x)))),
+            funding_rounds=('funding_round', lambda x: ', '.join(sorted(set(str(r) for r in x if pd.notna(r))))),
             deals_count=('deal_id', 'count'),
         ).reset_index()
     else:
-        val_agg = pd.DataFrame(columns=['company_id', 'year', 'eoy_valuation',
-                                        'eoy_deal_size', 'funding_rounds', 'deals_count'])
+        deal_agg = pd.DataFrame(columns=['company_id', 'year', 'eoy_deal_size',
+                                          'funding_rounds', 'deals_count'])
+
+    # Merge valuations and deal activity into val_agg for compatibility
+    val_agg = valuation_df[['company_id', 'year', 'eoy_valuation']].merge(
+        deal_agg, on=['company_id', 'year'], how='outer'
+    )
 
     # 3. Revenue by year
     revenue_df = pd.read_sql("""

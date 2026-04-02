@@ -143,9 +143,11 @@ def generate_outputs(scored_df, conn, output_dir):
     # Get most recent year per company for current-state comparison
     latest_year = scored_df['year'].max()
 
-    # Merge scored with production
+    # Merge scored with production — include all explain columns
     compare_cols = ['company_id', 'year', 'calculated_qot', 'calculated_sub_quality',
-                    'segment', 'company_name', 'last_rule_applied', 'mosaic_score']
+                    'segment', 'company_name', 'last_rule_applied', 'mosaic_score',
+                    'eoy_valuation', 'revenue', 'rev_growth_3y', 'val_growth_3y',
+                    'is_unicorn', 'is_decacorn', 'has_tier1_vc']
     available = [c for c in compare_cols if c in scored_df.columns]
     merged = scored_df[available].merge(prod, on=['company_id', 'year'], how='inner')
     merged['delta'] = merged['calculated_qot'] - merged['production_qot']
@@ -162,8 +164,25 @@ def generate_outputs(scored_df, conn, output_dir):
     merged = filter_software(merged, companies)
     print(f"  Filtered to {merged['company_id'].nunique()} software companies")
 
+    # Compute per-company explain metrics from full history
+    years_at_top = scored_df[scored_df['calculated_qot'] >= 4].groupby('company_id')['year'].count()
+    years_at_top.name = 'years_at_top'
+
+    q5_years = scored_df[scored_df['calculated_qot'] == 5].groupby('company_id')['year'].max()
+    q5_years.name = 'last_hot_year'
+
     # Focus on latest year per company for all tabs
     latest = merged.sort_values('year').groupby('company_id').last().reset_index()
+
+    # Add explain metrics
+    latest = latest.merge(years_at_top, on='company_id', how='left')
+    latest['years_at_top'] = latest['years_at_top'].fillna(0).astype(int)
+    latest = latest.merge(q5_years, on='company_id', how='left')
+    latest['years_since_last_hot'] = np.where(
+        latest['last_hot_year'].notna(),
+        latest['year'] - latest['last_hot_year'],
+        np.nan
+    )
 
     # --- Tab 1: Changes to Q5 ---
     # Companies where Q5 status changed in latest year vs production
@@ -175,6 +194,8 @@ def generate_outputs(scored_df, conn, output_dir):
 
     tab1 = q5_changes[[
         'company_id', 'company_name', 'segment', 'mosaic_score',
+        'eoy_valuation', 'revenue', 'rev_growth_3y', 'val_growth_3y',
+        'is_unicorn', 'is_decacorn', 'has_tier1_vc',
         'sub_quality', 'production_qot', 'calculated_qot', 'delta',
         'direction', 'last_rule_applied'
     ]].copy()
@@ -197,8 +218,11 @@ def generate_outputs(scored_df, conn, output_dir):
 
     tab2 = has_designation[[
         'company_id', 'company_name', 'segment', 'mosaic_score',
+        'eoy_valuation', 'revenue', 'rev_growth_3y', 'val_growth_3y',
+        'is_unicorn', 'is_decacorn',
         'sub_quality', 'calculated_sub_quality', 'designation_change',
         'production_qot', 'calculated_qot',
+        'years_at_top', 'years_since_last_hot',
         'last_rule_applied'
     ]].copy()
     tab2 = tab2.rename(columns={
@@ -255,8 +279,11 @@ def generate_outputs(scored_df, conn, output_dir):
 
     tab4 = transitions[[
         'company_id', 'company_name', 'segment', 'mosaic_score',
+        'eoy_valuation', 'revenue', 'rev_growth_3y', 'val_growth_3y',
         'transition', 'current_sq', 'model_sq',
-        'production_qot', 'calculated_qot', 'last_rule_applied'
+        'production_qot', 'calculated_qot',
+        'years_at_top', 'years_since_last_hot',
+        'last_rule_applied'
     ]].copy()
     tab4 = tab4.rename(columns={
         'current_sq': 'current_sub_quality',
@@ -280,6 +307,7 @@ def generate_outputs(scored_df, conn, output_dir):
 
     tab3 = other_changes[[
         'company_id', 'company_name', 'segment', 'mosaic_score',
+        'eoy_valuation', 'revenue', 'rev_growth_3y', 'val_growth_3y',
         'sub_quality', 'production_qot', 'calculated_qot', 'delta',
         'direction', 'last_rule_applied'
     ]].copy()
@@ -291,7 +319,10 @@ def generate_outputs(scored_df, conn, output_dir):
     top_companies = latest[latest['calculated_qot'] >= 4].copy()
     tab5 = top_companies[[
         'company_id', 'company_name', 'segment', 'mosaic_score',
+        'eoy_valuation', 'revenue', 'rev_growth_3y', 'val_growth_3y',
+        'is_unicorn', 'is_decacorn', 'has_tier1_vc',
         'sub_quality', 'calculated_sub_quality', 'calculated_qot',
+        'years_at_top', 'years_since_last_hot',
         'last_rule_applied'
     ]].copy()
     tab5 = tab5.rename(columns={
