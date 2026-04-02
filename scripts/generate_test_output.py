@@ -171,6 +171,9 @@ def generate_outputs(scored_df, conn, output_dir):
     q5_years = scored_df[scored_df['calculated_qot'] == 5].groupby('company_id')['year'].max()
     q5_years.name = 'last_hot_year'
 
+    last_raise_year = scored_df[scored_df['deals_count'] > 0].groupby('company_id')['year'].max()
+    last_raise_year.name = 'last_raise_year'
+
     # Focus on latest year per company for all tabs
     latest = merged.sort_values('year').groupby('company_id').last().reset_index()
 
@@ -183,6 +186,7 @@ def generate_outputs(scored_df, conn, output_dir):
         latest['year'] - latest['last_hot_year'],
         np.nan
     )
+    latest = latest.merge(last_raise_year, on='company_id', how='left')
 
     # --- Tab 1: Changes to Q5 ---
     # Companies where Q5 status changed in latest year vs production
@@ -195,7 +199,7 @@ def generate_outputs(scored_df, conn, output_dir):
     tab1 = q5_changes[[
         'company_id', 'company_name', 'segment', 'mosaic_score',
         'eoy_valuation', 'revenue', 'rev_growth_3y', 'val_growth_3y',
-        'is_unicorn', 'is_decacorn', 'has_tier1_vc',
+        'is_unicorn', 'is_decacorn', 'has_tier1_vc', 'last_raise_year',
         'sub_quality', 'production_qot', 'calculated_qot', 'delta',
         'direction', 'last_rule_applied'
     ]].copy()
@@ -219,7 +223,7 @@ def generate_outputs(scored_df, conn, output_dir):
     tab2 = has_designation[[
         'company_id', 'company_name', 'segment', 'mosaic_score',
         'eoy_valuation', 'revenue', 'rev_growth_3y', 'val_growth_3y',
-        'is_unicorn', 'is_decacorn',
+        'is_unicorn', 'is_decacorn', 'last_raise_year',
         'sub_quality', 'calculated_sub_quality', 'designation_change',
         'production_qot', 'calculated_qot',
         'years_at_top', 'years_since_last_hot',
@@ -280,6 +284,7 @@ def generate_outputs(scored_df, conn, output_dir):
     tab4 = transitions[[
         'company_id', 'company_name', 'segment', 'mosaic_score',
         'eoy_valuation', 'revenue', 'rev_growth_3y', 'val_growth_3y',
+        'last_raise_year',
         'transition', 'current_sq', 'model_sq',
         'production_qot', 'calculated_qot',
         'years_at_top', 'years_since_last_hot',
@@ -308,6 +313,7 @@ def generate_outputs(scored_df, conn, output_dir):
     tab3 = other_changes[[
         'company_id', 'company_name', 'segment', 'mosaic_score',
         'eoy_valuation', 'revenue', 'rev_growth_3y', 'val_growth_3y',
+        'last_raise_year',
         'sub_quality', 'production_qot', 'calculated_qot', 'delta',
         'direction', 'last_rule_applied'
     ]].copy()
@@ -320,7 +326,7 @@ def generate_outputs(scored_df, conn, output_dir):
     tab5 = top_companies[[
         'company_id', 'company_name', 'segment', 'mosaic_score',
         'eoy_valuation', 'revenue', 'rev_growth_3y', 'val_growth_3y',
-        'is_unicorn', 'is_decacorn', 'has_tier1_vc',
+        'is_unicorn', 'is_decacorn', 'has_tier1_vc', 'last_raise_year',
         'sub_quality', 'calculated_sub_quality', 'calculated_qot',
         'years_at_top', 'years_since_last_hot',
         'last_rule_applied'
